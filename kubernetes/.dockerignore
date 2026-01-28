@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Results and data (will be on persistent volumes)
+results/
+data/
+*.pth
+*.pt
+*.ckpt
+runs/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Utilities and scripts (not needed in container)
+utils/
+scripts/
+setup.sh
+B1_Kubernetes/
+
+# Kubernetes files
+kubernetes/k8s-*.yaml
+kubernetes/deploy.sh
+kubernetes/.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other project files
+CHANGELOG.md
+PROJECT_STATUS.md
+QUICKREF.md

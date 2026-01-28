@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quickdraw-results-pvc # Will be set by deploy.sh from .env
+  namespace: NAMESPACE_PLACEHOLDER # Will be set by deploy.sh from .env
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: rook-ceph-block

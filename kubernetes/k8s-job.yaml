@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quickdraw-training-job # Will be set by deploy.sh from .env
+  namespace: NAMESPACE_PLACEHOLDER # Will be set by deploy.sh from .env
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: quickdraw-training
+        job-type: classification
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+      containers:
+        - name: training
+          image: IMAGE_PLACEHOLDER # Will be set by deploy.sh from .env
+
+          resources:
+            requests:
+              memory: "12Gi"
+              cpu: "2"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "14Gi"
+              cpu: "2"
+              nvidia.com/gpu: "1"
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONPATH
+              value: "/workspace"
+
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /workspace/data # Quick, Draw! dataset cache
+            - name: results-volume
+              mountPath: /workspace/runs # Training results
+            - name: dshm
+              mountPath: /dev/shm
+
+          command: ["python"]
+          args:
+            - "train_all_models.py" # Runs Quick, Draw! training
+
+      volumes:
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: "10Gi"
+        - name: results-volume
+          persistentVolumeClaim:
+            claimName: quickdraw-results-pvc # Will be set by deploy.sh
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "10Gi"
