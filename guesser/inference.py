@@ -22,16 +22,24 @@ def load_model(model_path, model_type, device):
     # First load checkpoint to determine num_classes
     checkpoint = torch.load(model_path, map_location=device)
     
-    # Infer num_classes from the checkpoint
+    # Infer num_classes from the checkpoint based on model architecture
     if 'head.weight' in checkpoint['model_state_dict']:
+        # MLP uses 'head'
         num_classes = checkpoint['model_state_dict']['head.weight'].shape[0]
     elif 'fc.weight' in checkpoint['model_state_dict']:
+        # ResNet uses 'fc'
         num_classes = checkpoint['model_state_dict']['fc.weight'].shape[0]
+    elif 'mlp_head.1.weight' in checkpoint['model_state_dict']:
+        # ViT uses 'mlp_head' (Sequential: LayerNorm + Linear)
+        num_classes = checkpoint['model_state_dict']['mlp_head.1.weight'].shape[0]
     else:
         # Fallback: try to find the last linear layer
         for key in checkpoint['model_state_dict'].keys():
             if 'weight' in key and len(checkpoint['model_state_dict'][key].shape) == 2:
                 num_classes = checkpoint['model_state_dict'][key].shape[0]
+                break
+        else:
+            num_classes = 345  # Default fallback
     
     print(f"Detected {num_classes} classes from checkpoint")
     
@@ -144,10 +152,14 @@ def main():
     # First, load one model to determine num_classes
     first_model_path = model_configs[0][1]
     checkpoint = torch.load(first_model_path, map_location=device)
+    
+    # Infer num_classes from the checkpoint based on model architecture
     if 'head.weight' in checkpoint['model_state_dict']:
         num_classes = checkpoint['model_state_dict']['head.weight'].shape[0]
     elif 'fc.weight' in checkpoint['model_state_dict']:
         num_classes = checkpoint['model_state_dict']['fc.weight'].shape[0]
+    elif 'mlp_head.1.weight' in checkpoint['model_state_dict']:
+        num_classes = checkpoint['model_state_dict']['mlp_head.1.weight'].shape[0]
     else:
         num_classes = 50  # Default fallback
     

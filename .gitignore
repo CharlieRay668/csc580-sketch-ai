@@ -3,3 +3,5 @@ venv/
 data/
 models/
 .DS_Store
+guesser/demo_policies.py
+guesser/test_*
