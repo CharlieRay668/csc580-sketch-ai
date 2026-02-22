@@ -158,6 +158,9 @@ for key, default in {
     "use_policy": False,
     "policy_type": "confidence",
     "num_strokes": 0,
+    "policy_last_guess": {},
+    "policy_change_count": {},
+    "policy_locked": {},
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -212,6 +215,11 @@ def run_inference(agents_dict, pil_gray, use_policy=False, num_strokes=0):
         agent = agents_dict[name]
 
         if use_policy:
+            # if already locked in from 3 prior guesses, show stored result
+            if name in st.session_state.policy_locked:
+                results.append(st.session_state.policy_locked[name])
+                continue
+
             # reset agent state and evaluate fresh each rerun
             agent.reset()
             result = agent.predict_with_policy(pil_gray, num_strokes=num_strokes)
@@ -227,7 +235,23 @@ def run_inference(agents_dict, pil_gray, use_policy=False, num_strokes=0):
             }
 
             if result['should_guess']:
-                entry["locked"] = True
+                current_guess = preview["top_guess"]
+                last_guess = st.session_state.policy_last_guess.get(name)
+                changes = st.session_state.policy_change_count.get(name, 0)
+
+                if last_guess is not None and current_guess != last_guess:
+                    changes += 1
+                    st.session_state.policy_change_count[name] = changes
+
+                st.session_state.policy_last_guess[name] = current_guess
+
+                if changes >= 3:
+                    entry["locked"] = True
+                    st.session_state.policy_locked[name] = entry
+                else:
+                    entry["locked"] = True
+                    remaining = 3 - changes
+                    entry["policy_status"] = f"{remaining} change{'s' if remaining != 1 else ''} left"
             else:
                 entry["waiting"] = True
                 if agent.policy_type == "confidence":
@@ -381,6 +405,9 @@ def start_round():
     st.session_state.canvas_id += 1
     st.session_state.ai_results = []
     st.session_state.num_strokes = 0
+    st.session_state.policy_last_guess = {}
+    st.session_state.policy_change_count = {}
+    st.session_state.policy_locked = {}
 
 
 def end_round(canvas_result=None):
