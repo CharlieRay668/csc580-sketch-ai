@@ -6,7 +6,7 @@ import streamlit as st
 import numpy as np
 import time
 import random
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter
 from pathlib import Path
 from streamlit_drawable_canvas import st_canvas
 import sys
@@ -16,11 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # try loading our models, fall back to random guesses if torch isnt set up
 MODELS_AVAILABLE = False
 try:
-    import torch
-    import torch.nn.functional as F
-    from src.models import create_model
+    from src.agent import create_agent
     from src.data import ALL_QUICKDRAW_CATEGORIES
-    from torchvision import transforms
     MODELS_AVAILABLE = True
 except ImportError:
     ALL_QUICKDRAW_CATEGORIES = [
@@ -44,11 +41,11 @@ except ImportError:
     HAS_AUTOREFRESH = False
 
 st.set_page_config(page_title="Pictionary", page_icon="✏️", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="expanded")
 
 ROUND_TIME = 30
 TOTAL_ROUNDS = 5
-CANVAS_SIZE = 400
+CANVAS_SIZE = 550
 
 # (display name, model key, checkpoint filename, accent color)
 MODELS = [
@@ -63,6 +60,9 @@ MODEL_DESCS = {
     "ViT": "Vision Transformer",
 }
 
+MODELS_DIR = str(Path(__file__).resolve().parent.parent / "CSC 580 Models")
+POLICIES_DIR = str(Path(__file__).resolve().parent.parent / "CSC 580 Models" / "trained_policies")
+
 # styling - mostly just overriding streamlit defaults to get the paper look
 # we load two google fonts and set up some reusable classes
 st.markdown("""
@@ -71,9 +71,9 @@ st.markdown("""
 
 .stApp { background: #f5f0e8 !important; font-family: 'DM Sans', Georgia, serif; }
 section[data-testid="stSidebar"] { background: #ece7dc; }
-h1, h2, h3, h4, h5, h6, p, span, div, label,
+h1, h2, h3, h4, h5, h6, p, label,
 .stMarkdown, .stText { color: #2c2c2c !important; }
-#MainMenu, footer, header, .stDeployButton { display: none !important; }
+#MainMenu, footer, .stDeployButton { display: none !important; }
 
 .title-main {
     font-family: 'Libre Baskerville', Georgia, serif;
@@ -154,10 +154,22 @@ for key, default in {
     "ai_results": [],
     "round_history": [],
     "used_words": [],
-    "brush_size": 8,
+    "brush_size": 16,
+    "use_policy": False,
+    "policy_type": "confidence",
+    "num_strokes": 0,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+# Canvas drawings are noisier than clean QuickDraw data, so the trained
+# thresholds (up to 0.99) are too conservative
+CANVAS_POLICY_OVERRIDES = {
+    "confidence": {"threshold": 0.55},
+    "time": {"num_strokes": 8},
+    "learned": {"threshold": 0.3},
+}
 
 
 @st.cache_resource
@@ -166,67 +178,75 @@ def load_models(models_dir="models"):
     if not MODELS_AVAILABLE:
         return None
 
-    models_path = Path(models_dir)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    loaded = {}
+    agents = {}
+    use_policy = policy_type is not None
 
-    for name, mtype, fname, _ in MODELS:
-        path = models_path / fname
-        if not path.exists():
-            continue
+    for name, mtype, _, _ in MODELS:
         try:
-            ckpt = torch.load(path, map_location=device)
-            sd = ckpt['model_state_dict']
-
-            # each model type stores the output layer under a different key
-            if 'head.weight' in sd:
-                nc = sd['head.weight'].shape[0]
-            elif 'fc.weight' in sd:
-                nc = sd['fc.weight'].shape[0]
-            elif 'mlp_head.1.weight' in sd:
-                nc = sd['mlp_head.1.weight'].shape[0]
-            else:
-                nc = 50
-
-            model = create_model(mtype, num_classes=nc)
-            model.load_state_dict(sd)
-            model.to(device).eval()
-            loaded[name] = (model, nc, device)
+            agent = create_agent(
+                model_name=mtype,
+                models_dir=MODELS_DIR,
+                policies_dir=POLICIES_DIR,
+                use_policy=use_policy,
+                policy_type=policy_type,
+            )
+            # override trained thresholds for canvas use
+            if use_policy and agent.policy is not None and policy_type in CANVAS_POLICY_OVERRIDES:
+                for attr, val in CANVAS_POLICY_OVERRIDES[policy_type].items():
+                    if hasattr(agent.policy, attr):
+                        setattr(agent.policy, attr, val)
+            agents[name] = agent
         except Exception as e:
             st.warning(f"Could not load {name}: {e}")
 
-    return loaded if loaded else None
+    return agents if agents else None
 
 
-def _inference_transform():
-    # matches the normalization from training
-    return transforms.Compose([
-        transforms.Resize((28, 28)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5]),
-    ])
-
-
-def run_inference(models_dict, pil_gray):
-    """runs all three models on the grayscale drawing and returns top-5 guesses each"""
-    tensor = _inference_transform()(pil_gray)
+def run_inference(agents_dict, pil_gray, use_policy=False, num_strokes=0):
+    """runs all agents on the grayscale drawing and returns top-5 guesses each"""
     results = []
 
     for name, mtype, _, color in MODELS:
-        if name not in models_dict:
+        if name not in agents_dict:
             continue
-        model, nc, device = models_dict[name]
-        with torch.no_grad():
-            logits = model(tensor.unsqueeze(0).to(device))
-            probs = F.softmax(logits, dim=1)[0]
-            vals, idxs = torch.topk(probs, k=min(5, nc))
+        agent = agents_dict[name]
 
-        cats = ALL_QUICKDRAW_CATEGORIES[:nc]
-        guesses = [{"label": cats[i.item()], "conf": v.item()} for v, i in zip(vals, idxs)]
-        results.append({
-            "model": name, "color": color, "guesses": guesses,
-            "top_guess": guesses[0]["label"], "top_conf": guesses[0]["conf"],
-        })
+        if use_policy:
+            # reset agent state and evaluate fresh each rerun
+            agent.reset()
+            result = agent.predict_with_policy(pil_gray, num_strokes=num_strokes)
+
+            # always show the model's current best guess
+            preview = agent.predict(pil_gray, return_top_k=5)
+            guesses = [{"label": g["label"], "conf": g["confidence"]}
+                       for g in preview["guesses"]]
+            entry = {
+                "model": name, "color": color, "guesses": guesses,
+                "top_guess": preview["top_guess"],
+                "top_conf": preview["top_confidence"],
+            }
+
+            if result['should_guess']:
+                entry["locked"] = True
+            else:
+                entry["waiting"] = True
+                if agent.policy_type == "confidence":
+                    entry["policy_status"] = f"{preview['top_confidence']:.0%} / {agent.policy.threshold:.0%} needed"
+                elif agent.policy_type == "time":
+                    entry["policy_status"] = f"{num_strokes} / {agent.policy.num_strokes} strokes"
+                elif agent.policy_type == "learned":
+                    entry["policy_status"] = "neural net says wait"
+
+            results.append(entry)
+        else:
+            result = agent.predict(pil_gray, return_top_k=5)
+            guesses = [{"label": g["label"], "conf": g["confidence"]}
+                       for g in result["guesses"]]
+            results.append({
+                "model": name, "color": color, "guesses": guesses,
+                "top_guess": result["top_guess"],
+                "top_conf": result["top_confidence"],
+            })
     return results
 
 
@@ -265,20 +285,33 @@ def pick_word():
 
 
 def get_drawing(canvas_result):
-    """extracts a grayscale pil image from the canvas. returns None if nothing drawn."""
+    """extracts a 28x28 grayscale pil image from the canvas. returns None if nothing drawn.
+    inverts, resizes, dilates, and contrast-stretches so dark-on-light canvas strokes
+    become clean white-on-black at 28x28 to match the QuickDraw training data format."""
     if canvas_result.image_data is None:
         return None
     arr = canvas_result.image_data.astype(np.uint8)
     if arr[:, :, 3].max() == 0:
         return None
-    return Image.fromarray(arr, mode="RGBA").convert("L")
+    gray = Image.fromarray(arr).convert("L")
+    inverted = ImageOps.invert(gray)
+    small = inverted.resize((28, 28), Image.BILINEAR)
+    dilated = small.filter(ImageFilter.MaxFilter(3))
+    d_arr = np.array(dilated, dtype=np.float32)
+    lo, hi = d_arr.min(), d_arr.max()
+    if hi > lo:
+        d_arr = (d_arr - lo) / (hi - lo) * 255.0
+    return Image.fromarray(d_arr.astype(np.uint8))
 
 
 def infer_or_simulate(pil_gray, target):
     """runs real models if checkpoints are available, otherwise uses placeholder guesses"""
-    models = load_models()
-    if models:
-        return run_inference(models, pil_gray)
+    policy_type = st.session_state.get("policy_type") if st.session_state.get("use_policy") else None
+    agents = load_agents(policy_type)
+    if agents:
+        use_policy = policy_type is not None
+        num_strokes = st.session_state.get("num_strokes", 0)
+        return run_inference(agents, pil_gray, use_policy=use_policy, num_strokes=num_strokes)
     return simulate_inference(target)
 
 
@@ -306,10 +339,24 @@ def conf_bar(label, conf, color, top=False, correct=False):
 
 def model_card(result, target):
     """renders the card for one model showing its top 3 guesses"""
+    waiting = result.get("waiting", False)
+    locked = result.get("locked", False)
     hit = result["top_guess"] == target
-    border = "#2d6a4f" if hit else "#ddd5c8"
-    badge = '<span class="correct-chip">CORRECT</span>' if hit else ""
+    border = "#2d6a4f" if (hit and not waiting) else "#ddd5c8"
     c = result["color"]
+
+    policy_status = result.get("policy_status", "")
+
+    if locked:
+        badge = '<span class="correct-chip">CORRECT</span>' if hit else '<span style="font-size:10px; font-weight:700; color:#fff !important; background:#3d5a80; padding:2px 8px; border-radius:3px; display:inline-block;">LOCKED IN</span>'
+    elif waiting:
+        badge = '<span style="font-size:10px; font-weight:700; color:#fff !important; background:#b8860b; padding:2px 8px; border-radius:3px; display:inline-block;">WAITING</span>'
+    elif hit:
+        badge = '<span class="correct-chip">CORRECT</span>'
+    else:
+        badge = ""
+
+    status_html = f'<div style="font-size:10px; color:#b5aea5; margin-top:4px;">{policy_status}</div>' if policy_status else ""
 
     st.markdown(f"""
     <div class="paper-card" style="border-color:{border}; margin-bottom:14px;">
@@ -317,11 +364,12 @@ def model_card(result, target):
             <span class="model-tag" style="background:{c}18; color:{c} !important;">{result['model']}</span>
             {badge}
         </div>
+        {status_html}
     </div>""", unsafe_allow_html=True)
 
     for i, g in enumerate(result["guesses"][:3]):
         conf_bar(g["label"], g["conf"], c,
-                 top=(i == 0), correct=(i == 0 and g["label"] == target))
+                 top=(i == 0), correct=(i == 0 and g["label"] == target and not waiting))
 
 
 def start_round():
@@ -332,6 +380,7 @@ def start_round():
     st.session_state.round_start_time = time.time()
     st.session_state.canvas_id += 1
     st.session_state.ai_results = []
+    st.session_state.num_strokes = 0
 
 
 def end_round(canvas_result=None):
@@ -384,11 +433,11 @@ def screen_menu():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    models = load_models()
-    if models:
-        st.markdown(f'<p style="text-align:center; font-size:12px; color:#2d6a4f !important;">Models loaded: {", ".join(models.keys())}</p>', unsafe_allow_html=True)
+    agents = load_agents()
+    if agents:
+        st.markdown(f'<p style="text-align:center; font-size:12px; color:#2d6a4f !important;">Models loaded: {", ".join(agents.keys())}</p>', unsafe_allow_html=True)
     else:
-        st.markdown('<p style="text-align:center; font-size:12px; color:#b8860b !important;">No checkpoint files in models/ yet — using placeholder guesses for now</p>', unsafe_allow_html=True)
+        st.markdown('<p style="text-align:center; font-size:12px; color:#b8860b !important;">No checkpoint files found — using placeholder guesses for now</p>', unsafe_allow_html=True)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     _, bc, _ = st.columns([2, 1, 2])
@@ -410,7 +459,7 @@ def screen_playing():
     # if streamlit-autorefresh is installed, use it to tick the timer
     # otherwise show a manual refresh button
     if HAS_AUTOREFRESH:
-        st_autorefresh(interval=2000, key="playing_refresh")
+        st_autorefresh(interval=1000, key="playing_refresh")
 
     elapsed = time.time() - st.session_state.round_start_time
     tl = max(0, ROUND_TIME - int(elapsed))
@@ -452,7 +501,7 @@ def screen_playing():
 
         cc1, cc2, cc3 = st.columns([3, 1, 1])
         with cc1:
-            st.session_state.brush_size = st.slider("Brush", 2, 24, st.session_state.brush_size, label_visibility="collapsed")
+            st.session_state.brush_size = st.slider("Brush size", 2, 36, st.session_state.brush_size)
         with cc2:
             if st.button("Clear", use_container_width=True):
                 st.session_state.canvas_id += 1
@@ -470,10 +519,13 @@ def screen_playing():
     with col_ai:
         st.markdown('<p class="label-sm">What the models see</p>', unsafe_allow_html=True)
 
+        if canvas_result.json_data:
+            st.session_state.num_strokes = len(canvas_result.json_data.get("objects", []))
+
         drawing = get_drawing(canvas_result)
         if drawing:
             # this is the 28x28 image that actually gets fed into the networks
-            st.image(drawing.resize((28, 28)), caption="28 × 28 input", width=84)
+            st.image(drawing, caption="28 x 28 input", width=84)
             results = infer_or_simulate(drawing, st.session_state.target_word)
             st.session_state.ai_results = results
             for r in results:
@@ -583,6 +635,25 @@ def screen_game_over():
             st.session_state.ai_results = []
             st.rerun()
 
+
+# sidebar settings for policy mode
+with st.sidebar:
+    st.markdown("### Settings")
+    st.session_state.use_policy = st.toggle("Policy Mode", value=st.session_state.use_policy,
+                                            help="When enabled, models use trained guessing policies to decide when to commit to a guess.")
+    if st.session_state.use_policy:
+        st.session_state.policy_type = st.selectbox(
+            "Policy Type",
+            ["confidence", "time", "learned"],
+            index=["confidence", "time", "learned"].index(st.session_state.policy_type),
+            format_func=lambda x: {"confidence": "Confidence Threshold", "time": "Time-Based (Stroke Count)", "learned": "Learned (Neural Network)"}[x],
+        )
+        policy_descs = {
+            "confidence": "Guesses when the model's confidence exceeds a trained threshold.",
+            "time": "Waits until a certain number of strokes before guessing.",
+            "learned": "A neural network decides when to commit to a guess.",
+        }
+        st.caption(policy_descs[st.session_state.policy_type])
 
 # route to whatever screen we're on
 screen = {
