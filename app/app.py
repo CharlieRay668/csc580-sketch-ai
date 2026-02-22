@@ -173,8 +173,8 @@ CANVAS_POLICY_OVERRIDES = {
 
 
 @st.cache_resource
-def load_models(models_dir="models"):
-    """loads all three checkpoints if they exist. cached so we only do this once."""
+def load_agents(policy_type=None):
+    """loads PictionaryAgent instances for all three models. cached per configuration."""
     if not MODELS_AVAILABLE:
         return None
 
