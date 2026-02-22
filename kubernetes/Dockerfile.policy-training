@@ -1,0 +1,54 @@
+# Dockerfile for Guessing Policy Training on NRP Nautilus
+# Multi-agent competitive training with progressive stroke reveal
+
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# Set working directory
+WORKDIR /workspace
+
+# Set timezone to avoid interactive prompt
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles
+
+# Install system dependencies including OpenCV requirements
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    vim \
+    libgl1 \
+    libglib2.0-0 \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies for policy training
+RUN pip install --no-cache-dir \
+    "numpy<2.0" \
+    torch \
+    torchvision \
+    tqdm \
+    einops \
+    matplotlib \
+    pillow \
+    scipy \
+    opencv-python \
+    scikit-image \
+    h5py
+
+# Copy source code
+COPY src/ /workspace/src/
+COPY kubernetes/train_policies_cluster.py /workspace/
+
+# Copy pre-trained models
+COPY models/mlp_best.pth /workspace/models/mlp_best.pth
+COPY models/resnet18_best.pth /workspace/models/resnet18_best.pth
+COPY models/vit_best.pth /workspace/models/vit_best.pth
+
+# Create directories for data and results
+RUN mkdir -p /workspace/data /workspace/results /workspace/models/policies
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/workspace
+
+# Default command - runs the policy training script
+CMD ["python", "train_policies_cluster.py"]

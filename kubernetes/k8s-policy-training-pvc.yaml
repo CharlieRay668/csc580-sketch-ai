@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: quickdraw-policy-results-pvc
+  namespace: NAMESPACE_PLACEHOLDER # Will be set by deploy script
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi # Small, just for policy checkpoints
+  storageClassName: rook-ceph-block

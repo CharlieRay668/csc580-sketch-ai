@@ -1,161 +1,291 @@
-"""Utility functions for visualization and analysis."""
+"""
+Utility functions for loading models and working with guessing policies.
+Provides helper functions to make model loading and policy creation easier.
+"""
+
 import torch
-import matplotlib.pyplot as plt
-import json
-import numpy as np
 from pathlib import Path
+from typing import Tuple, Optional
+from src.models import create_model
+from src.policies import GuessingPolicy, PolicyWrapper, create_policy
 
 
-def count_parameters(model):
-    """Count trainable parameters in a model.
+def detect_num_classes(checkpoint_path: str, device: torch.device = torch.device('cpu')) -> int:
+    """Detect the number of classes from a model checkpoint.
     
     Args:
-        model: PyTorch model
-    
+        checkpoint_path: Path to the .pth checkpoint file
+        device: Device to load checkpoint on
+        
     Returns:
-        Number of trainable parameters
+        Number of classes the model was trained on
     """
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Check different possible locations based on model architecture
+    state_dict = checkpoint['model_state_dict']
+    
+    if 'head.weight' in state_dict:
+        # MLP architecture
+        return state_dict['head.weight'].shape[0]
+    elif 'fc.weight' in state_dict:
+        # ResNet architecture
+        return state_dict['fc.weight'].shape[0]
+    elif 'mlp_head.1.weight' in state_dict:
+        # ViT architecture (Sequential: LayerNorm + Linear)
+        return state_dict['mlp_head.1.weight'].shape[0]
+    else:
+        # Fallback: search for the first 2D weight tensor (likely final layer)
+        for key in state_dict.keys():
+            if 'weight' in key and len(state_dict[key].shape) == 2:
+                return state_dict[key].shape[0]
+        
+        raise ValueError(f"Could not detect num_classes from checkpoint at {checkpoint_path}")
 
 
-def get_model_size_mb(model):
-    """Get model size in MB.
+def load_model_with_policy(
+    model_path: str,
+    model_type: str,
+    policy_type: str,
+    device: Optional[torch.device] = None,
+    policy_kwargs: Optional[dict] = None
+) -> Tuple[PolicyWrapper, int]:
+    """Load a model and wrap it with a guessing policy.
+    
+    This is a convenience function that:
+    1. Automatically detects the number of classes from the checkpoint
+    2. Loads the model
+    3. Creates the specified policy
+    4. Returns a ready-to-use PolicyWrapper
     
     Args:
-        model: PyTorch model
-    
+        model_path: Path to model checkpoint (.pth file)
+        model_type: Model architecture ('mlp', 'resnet18', or 'vit')
+        policy_type: Policy type ('confidence', 'time', or 'learned')
+        device: Device to load model on (default: auto-detect)
+        policy_kwargs: Additional arguments for the policy (e.g., {'threshold': 0.85})
+        
     Returns:
-        Model size in megabytes
-    """
-    param_size = sum(p.numel() * p.element_size() for p in model.parameters())
-    buffer_size = sum(b.numel() * b.element_size() for b in model.buffers())
-    return (param_size + buffer_size) / 1024 / 1024
-
-
-def plot_training_curves(histories, save_path=None, title="Training Curves"):
-    """Plot training and validation curves for multiple models.
-    
-    Args:
-        histories: Dict of {model_name: history_dict}
-        save_path: Optional path to save the plot
-        title: Plot title
-    """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Plot losses
-    for name, history in histories.items():
-        epochs = history['epochs']
-        ax1.plot(epochs, history['train_loss'], label=f"{name} (train)", linestyle='--', alpha=0.7)
-        ax1.plot(epochs, history['val_loss'], label=f"{name} (val)")
-    
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.set_title("Loss Curves")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot accuracies
-    for name, history in histories.items():
-        epochs = history['epochs']
-        ax2.plot(epochs, history['train_acc'], label=f"{name} (train)", linestyle='--', alpha=0.7)
-        ax2.plot(epochs, history['val_acc'], label=f"{name} (val)")
-    
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Accuracy (%)")
-    ax2.set_title("Accuracy Curves")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    fig.suptitle(title, fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
-    
-    plt.show()
-
-
-def load_history(history_path):
-    """Load training history from JSON file.
-    
-    Args:
-        history_path: Path to history JSON file
-    
-    Returns:
-        History dictionary
-    """
-    with open(history_path, 'r') as f:
-        return json.load(f)
-
-
-def compare_models(results_dict):
-    """Print comparison table of model results.
-    
-    Args:
-        results_dict: Dict of {model_name: results}
-    """
-    print("\n" + "="*80)
-    print("MODEL COMPARISON")
-    print("="*80)
-    print(f"{'Model':<15} {'Parameters':<15} {'Best Val Acc':<15} {'Final Val Acc':<15}")
-    print("-"*80)
-    
-    for model_name, results in results_dict.items():
-        params = results.get('num_parameters', 'N/A')
-        best_acc = results.get('best_val_acc', 'N/A')
-        final_acc = results.get('final_val_acc', 'N/A')
+        Tuple of (PolicyWrapper, num_classes)
         
-        if isinstance(params, int):
-            params_str = f"{params:,}"
-        else:
-            params_str = str(params)
-        
-        if isinstance(best_acc, (int, float)):
-            best_acc_str = f"{best_acc:.2f}%"
-        else:
-            best_acc_str = str(best_acc)
-        
-        if isinstance(final_acc, (int, float)):
-            final_acc_str = f"{final_acc:.2f}%"
-        else:
-            final_acc_str = str(final_acc)
-        
-        print(f"{model_name:<15} {params_str:<15} {best_acc_str:<15} {final_acc_str:<15}")
-    
-    print("="*80 + "\n")
-
-
-def visualize_predictions(model, dataset, num_samples=16, device='cpu'):
-    """Visualize model predictions on sample images.
-    
-    Args:
-        model: Trained PyTorch model
-        dataset: Dataset to sample from
-        num_samples: Number of samples to visualize
-        device: Device to run inference on
+    Example:
+        >>> wrapper, num_classes = load_model_with_policy(
+        ...     'models/resnet18_best.pth',
+        ...     'resnet18',
+        ...     'confidence',
+        ...     policy_kwargs={'threshold': 0.9}
+        ... )
+        >>> should_guess, pred, conf, logits = wrapper.predict(image, elapsed_time=3.0)
     """
-    model.eval()
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if policy_kwargs is None:
+        policy_kwargs = {}
+    
+    # Detect number of classes
+    num_classes = detect_num_classes(model_path, device)
+    
+    # Load model
+    checkpoint = torch.load(model_path, map_location=device)
+    model = create_model(model_type, num_classes=num_classes)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
+    model.eval()
     
-    fig, axes = plt.subplots(4, 4, figsize=(12, 12))
-    axes = axes.flatten()
+    # Create policy (add num_classes for learned policy)
+    if policy_type == 'learned':
+        policy_kwargs['num_classes'] = num_classes
     
-    indices = np.random.choice(len(dataset), num_samples, replace=False)
+    policy = create_policy(policy_type, **policy_kwargs)
     
-    with torch.no_grad():
-        for idx, ax in zip(indices, axes):
-            img, label = dataset[idx]
-            img_tensor = img.unsqueeze(0).to(device)
-            
-            output = model(img_tensor)
-            _, pred = torch.max(output, 1)
-            
-            # Display image
-            img_np = img.squeeze().cpu().numpy()
-            ax.imshow(img_np, cmap='gray')
-            ax.set_title(f"True: {label}\nPred: {pred.item()}")
-            ax.axis('off')
+    # Create wrapper
+    wrapper = PolicyWrapper(model, policy, device)
     
-    plt.tight_layout()
-    plt.show()
+    return wrapper, num_classes
+
+
+def load_all_models_with_policy(
+    models_dir: str = "models",
+    policy_type: str = "confidence",
+    device: Optional[torch.device] = None,
+    policy_kwargs: Optional[dict] = None
+) -> dict:
+    """Load all three models (MLP, ResNet-18, ViT) with the same policy.
+    
+    Args:
+        models_dir: Directory containing model checkpoints
+        policy_type: Policy type to use for all models
+        device: Device to load models on (default: auto-detect)
+        policy_kwargs: Policy configuration
+        
+    Returns:
+        Dictionary mapping model names to (PolicyWrapper, num_classes) tuples
+        
+    Example:
+        >>> wrappers = load_all_models_with_policy(
+        ...     policy_type='confidence',
+        ...     policy_kwargs={'threshold': 0.85}
+        ... )
+        >>> for name, (wrapper, num_classes) in wrappers.items():
+        ...     print(f"{name}: {num_classes} classes")
+        ...     should_guess, pred, conf, _ = wrapper.predict(image, elapsed_time=2.0)
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if policy_kwargs is None:
+        policy_kwargs = {}
+    
+    models_dir = Path(models_dir)
+    model_configs = [
+        ("MLP", "mlp", models_dir / "mlp_best.pth"),
+        ("ResNet-18", "resnet18", models_dir / "resnet18_best.pth"),
+        ("ViT", "vit", models_dir / "vit_best.pth"),
+    ]
+    
+    wrappers = {}
+    
+    for name, model_type, model_path in model_configs:
+        if not model_path.exists():
+            print(f"Warning: {name} model not found at {model_path}")
+            continue
+        
+        try:
+            wrapper, num_classes = load_model_with_policy(
+                str(model_path),
+                model_type,
+                policy_type,
+                device,
+                policy_kwargs
+            )
+            wrappers[name] = (wrapper, num_classes)
+            print(f"Loaded {name} with {num_classes} classes")
+        except Exception as e:
+            print(f"Error loading {name}: {e}")
+    
+    return wrappers
+
+
+def compare_policies_on_model(
+    model_path: str,
+    model_type: str,
+    policies_config: dict,
+    device: Optional[torch.device] = None
+) -> dict:
+    """Load one model with multiple different policies for comparison.
+    
+    Args:
+        model_path: Path to model checkpoint
+        model_type: Model architecture
+        policies_config: Dict mapping policy names to (policy_type, policy_kwargs) tuples
+        device: Device to load on
+        
+    Returns:
+        Dictionary mapping policy names to PolicyWrapper instances
+        
+    Example:
+        >>> policies = {
+        ...     'Cautious': ('confidence', {'threshold': 0.95}),
+        ...     'Moderate': ('confidence', {'threshold': 0.85}),
+        ...     'Quick': ('time', {'wait_time': 3.0}),
+        ...     'Learned': ('learned', {}),
+        ... }
+        >>> wrappers = compare_policies_on_model(
+        ...     'models/resnet18_best.pth',
+        ...     'resnet18',
+        ...     policies
+        ... )
+        >>> for name, wrapper in wrappers.items():
+        ...     result = test_with_policy(wrapper)
+        ...     print(f"{name}: {result}")
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Detect number of classes
+    num_classes = detect_num_classes(model_path, device)
+    
+    # Load model once
+    checkpoint = torch.load(model_path, map_location=device)
+    model = create_model(model_type, num_classes=num_classes)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    model.eval()
+    
+    # Create wrappers with different policies
+    wrappers = {}
+    
+    for name, (policy_type, policy_kwargs) in policies_config.items():
+        # Add num_classes for learned policy
+        kwargs = policy_kwargs.copy()
+        if policy_type == 'learned':
+            kwargs['num_classes'] = num_classes
+        
+        policy = create_policy(policy_type, **kwargs)
+        wrapper = PolicyWrapper(model, policy, device)
+        wrappers[name] = wrapper
+    
+    return wrappers
+
+
+# Preset policy configurations for common use cases
+POLICY_PRESETS = {
+    'cautious': ('confidence', {'threshold': 0.95}),
+    'moderate': ('confidence', {'threshold': 0.85}),
+    'aggressive': ('confidence', {'threshold': 0.70}),
+    'quick': ('time', {'wait_time': 3.0, 'use_best_guess': True}),
+    'patient': ('time', {'wait_time': 8.0, 'use_best_guess': True}),
+    'instant': ('time', {'wait_time': 0.5, 'use_best_guess': False}),
+    'learned': ('learned', {'threshold': 0.5, 'include_confidence': True, 'include_time': True}),
+}
+
+
+def load_model_with_preset(
+    model_path: str,
+    model_type: str,
+    preset_name: str,
+    device: Optional[torch.device] = None
+) -> Tuple[PolicyWrapper, int]:
+    """Load a model with a preset policy configuration.
+    
+    Available presets:
+        - 'cautious': High confidence threshold (95%)
+        - 'moderate': Medium confidence threshold (85%)
+        - 'aggressive': Low confidence threshold (70%)
+        - 'quick': Fast time-based (3 seconds)
+        - 'patient': Slow time-based (8 seconds)
+        - 'instant': Very fast time-based (0.5 seconds)
+        - 'learned': Neural network policy
+    
+    Args:
+        model_path: Path to model checkpoint
+        model_type: Model architecture
+        preset_name: Name of preset configuration
+        device: Device to load on
+        
+    Returns:
+        Tuple of (PolicyWrapper, num_classes)
+        
+    Example:
+        >>> wrapper, num_classes = load_model_with_preset(
+        ...     'models/resnet18_best.pth',
+        ...     'resnet18',
+        ...     'moderate'
+        ... )
+    """
+    if preset_name not in POLICY_PRESETS:
+        raise ValueError(
+            f"Unknown preset: {preset_name}. "
+            f"Available: {list(POLICY_PRESETS.keys())}"
+        )
+    
+    policy_type, policy_kwargs = POLICY_PRESETS[preset_name]
+    
+    return load_model_with_policy(
+        model_path,
+        model_type,
+        policy_type,
+        device,
+        policy_kwargs
+    )

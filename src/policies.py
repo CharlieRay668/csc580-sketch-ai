@@ -30,10 +30,11 @@ class GuessingPolicy(ABC):
 class ConfidenceThresholdPolicy(GuessingPolicy):
     """Guess when model confidence exceeds threshold."""
     
-    def __init__(self, threshold: float = 0.9):
+    def __init__(self, threshold: float = 0.9, learning_rate: float = 0.01):
         if not 0.0 <= threshold <= 1.0:
             raise ValueError(f"Threshold must be in [0, 1], got {threshold}")
         self.threshold = threshold
+        self.learning_rate = learning_rate
         self._has_guessed = False
     
     def should_guess(self, logits: torch.Tensor, elapsed_time: Optional[float] = None, 
@@ -49,16 +50,32 @@ class ConfidenceThresholdPolicy(GuessingPolicy):
     
     def reset(self):
         self._has_guessed = False
+    
+    def update(self, was_correct: bool, was_late: bool):
+        """Update threshold based on performance.
+        
+        Args:
+            was_correct: Whether the guess was correct
+            was_late: Whether the guess was late (not in top 2)
+        """
+        if not was_correct:
+            # Wrong guess -> be more conservative
+            self.threshold = min(0.99, self.threshold + self.learning_rate)
+        elif was_late:
+            # Correct but late -> be more aggressive
+            self.threshold = max(0.5, self.threshold - self.learning_rate)
+        # If correct and not late, no change needed
 
 
 class TimeBasedPolicy(GuessingPolicy):
     """Guess after a certain number of strokes."""
     
-    def __init__(self, num_strokes: int = 5, use_best_guess: bool = False):
+    def __init__(self, num_strokes: int = 5, use_best_guess: bool = False, learning_rate: int = 1):
         if num_strokes <= 0:
             raise ValueError(f"num_strokes must be positive, got {num_strokes}")
         self.num_strokes = num_strokes
         self.use_best_guess = use_best_guess
+        self.learning_rate = learning_rate
         self._has_guessed = False
         self._best_confidence = 0.0
         self._best_prediction = None
@@ -90,6 +107,21 @@ class TimeBasedPolicy(GuessingPolicy):
         self._has_guessed = False
         self._best_confidence = 0.0
         self._best_prediction = None
+    
+    def update(self, was_correct: bool, was_late: bool):
+        """Update num_strokes based on performance.
+        
+        Args:
+            was_correct: Whether the guess was correct
+            was_late: Whether the guess was late (not in top 2)
+        """
+        if not was_correct:
+            # Wrong guess -> wait longer
+            self.num_strokes = min(20, self.num_strokes + self.learning_rate)
+        elif was_late:
+            # Correct but late -> guess sooner
+            self.num_strokes = max(1, self.num_strokes - self.learning_rate)
+        # If correct and not late, no change needed
 
 
 class LearnedPolicy(GuessingPolicy):

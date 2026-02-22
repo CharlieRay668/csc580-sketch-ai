@@ -3,7 +3,7 @@
 This readme will get updated later, but the important things to know:
 - Model definitions are found in src/models.py
 - Data setup is in src/data.py
-- Inference examples are in guesser/inference.py
+- Run trained policies with `python src/run_trained_policies.py`
 - Create a venv and install the requirements to run anything
 - kuberenetes/ contains code to run on the NRP Nautilus cluster (Ideally only Charlie needs to worry about that)
 - Create a models/ directory, and copy over the .pth files in Google Drive to actually run the inference models

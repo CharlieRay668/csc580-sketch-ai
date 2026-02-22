@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quickdraw-policy-training # Will be set by deploy script
+  namespace: NAMESPACE_PLACEHOLDER # Will be set by deploy script
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: quickdraw-policy-training
+        job-type: reinforcement-learning
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+
+      containers:
+        - name: policy-training
+          image: IMAGE_PLACEHOLDER # Will be set by deploy script
+
+          resources:
+            requests:
+              memory: "16Gi"
+              cpu: "4"
+              nvidia.com/gpu: "1"
+            limits:
+              memory: "18Gi"
+              cpu: "4"
+              nvidia.com/gpu: "1"
+
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONPATH
+              value: "/workspace"
+
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /workspace/data # Quick, Draw! dataset cache
+            - name: results-volume
+              mountPath: /workspace/models/policies # Trained policies output
+            - name: dshm
+              mountPath: /dev/shm
+
+          command: ["python"]
+          args:
+            - "train_policies_cluster.py"
+            - "--num-classes=50"
+            - "--samples-per-class=500"
+            - "--epochs=10"
+            - "--batch-size=64"
+            - "--max-batches=0" # Train on all data
+            - "--save-interval=5"
+            - "--device=cuda"
+
+      volumes:
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: "15Gi" # For Quick, Draw! dataset
+        - name: results-volume
+          persistentVolumeClaim:
+            claimName: quickdraw-policy-results-pvc
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "12Gi"

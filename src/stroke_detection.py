@@ -112,11 +112,18 @@ class StrokeDetector:
             print(f"  WARNING: {np.sum(still_missing > 0)} pixels still not covered after assignment!")
         
         if len(strokes) == 1 and self.use_skeleton_split:
-            split_strokes = self._split_stroke_by_skeleton(strokes[0], binary)
+            split_strokes = self._split_stroke_by_skeleton(strokes[0])
             if len(split_strokes) > 1:
                 strokes = split_strokes
         
-        return strokes
+        # Convert binary stroke masks to grayscale strokes with original pixel values
+        grayscale_strokes = []
+        for stroke_mask in strokes:
+            grayscale_stroke = np.zeros_like(image, dtype=np.uint8)
+            grayscale_stroke[stroke_mask > 0] = image[stroke_mask > 0]
+            grayscale_strokes.append(grayscale_stroke)
+        
+        return grayscale_strokes
     
     def _expand_to_original(self, seed_mask: np.ndarray, original_binary: np.ndarray) -> np.ndarray:
         """Expand seed mask to capture all connected pixels in original binary."""
